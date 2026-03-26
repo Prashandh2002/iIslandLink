@@ -1,13 +1,15 @@
-import { useState, useEffect } from "react";
+﻿import { useState, useEffect, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { createUserWithEmailAndPassword } from "firebase/auth";
 import { doc, setDoc } from "firebase/firestore";
-import { auth, db } from "../firebase/config";
+import { toast } from "react-toastify";
+import { auth, db, GOOGLE_MAPS_API_KEY } from "../firebase/config";
 import {
   Layers, Store, Building2, ChevronRight, ArrowLeft,
   User, Briefcase, Phone, Mail, MapPinned, Lock,
-  CheckCircle2, IdCard
+  CheckCircle2, IdCard, Truck
 } from "lucide-react";
+import { Wrapper, Status } from "@googlemaps/react-wrapper";
 import { Input } from "../components/ui/input";
 import {
   Select,
@@ -26,7 +28,7 @@ import { useAppSelector } from "../store/hooks";
 type RegistrationStep = "role" | "info" | "done";
 
 // Define the possible user roles
-type UserRole = "retail-customer" | "rdc-staff";
+type UserRole = "retail-customer" | "rdc-staff" | "logistics";
 
 // Define the structure of a role option
 interface RoleOption {
@@ -59,22 +61,160 @@ interface SelectFieldProps {
   children: React.ReactNode;
 }
 
+
+
 // ============================================================
-// REGISTRATION PAGE - Step by step user signup
+// UI Components - Helper functions to keep the main render clean
 // ============================================================
+
+// Reusable form field wrapper with label
+const FormField: React.FC<FormFieldProps> = ({ label, children }) => (
+  <div className="flex flex-col gap-1.5">
+    <span className="text-[11px] font-bold uppercase tracking-wider text-site-text-subtle">
+      {label}
+    </span>
+    {children}
+  </div>
+);
+
+// Input field with an icon inside
+const IconInputField: React.FC<IconInputFieldProps> = ({ id, icon: Icon, type = "text", placeholder, hint }) => (
+  <div className="flex flex-col gap-1">
+    <div className="relative">
+      <Icon
+        size={14}
+        className="absolute left-3 top-1/2 -translate-y-1/2 text-site-text-subtle"
+      />
+      <Input
+        id={id}
+        name={id}
+        type={type}
+        placeholder={placeholder}
+        className="bg-site-surface border-site-border text-site-text placeholder:text-site-text-subtle/40 h-11 pl-9 text-sm"
+      />
+    </div>
+    {hint && <p className="text-[10px] text-site-text-subtle pl-1">{hint}</p>}
+  </div>
+);
+
+// Dropdown select field
+const SelectField: React.FC<SelectFieldProps> = ({ name, placeholder, children }) => (
+  <Select name={name}>
+    <SelectTrigger className="w-full h-11 bg-site-surface border-site-border text-site-text text-sm">
+      <SelectValue placeholder={placeholder} />
+    </SelectTrigger>
+    <SelectContent className="bg-site-card border-site-border text-site-text">
+      {children}
+    </SelectContent>
+  </Select>
+);
+
+// Google Map Location Picker Component
+const LocationPicker: React.FC<{ onLocationSelect: (lat: number, lng: number) => void }> = ({ onLocationSelect }) => {
+  const mapRef = useRef<HTMLDivElement>(null);
+  const [error, setError] = useState<string | null>(null);
+
+
+  useEffect(() => {
+    if (!mapRef.current) return;
+
+    const map = new google.maps.Map(mapRef.current, {
+      center: { lat: 6.9271, lng: 79.8612 }, // Colombo default
+      zoom: 12,
+      styles: [
+        { elementType: "geometry", stylers: [{ color: "#1a1a2e" }] },
+        { elementType: "labels.text.stroke", stylers: [{ color: "#1a1a2e" }] },
+        { elementType: "labels.text.fill", stylers: [{ color: "#8a8a9a" }] },
+        { featureType: "road", elementType: "geometry", stylers: [{ color: "#2a2a3e" }] },
+        { featureType: "water", elementType: "geometry", stylers: [{ color: "#0e0e1a" }] },
+      ],
+      disableDefaultUI: true,
+      zoomControl: true,
+    });
+
+    const initialMarker = new google.maps.Marker({
+      position: { lat: 6.9271, lng: 79.8612 },
+      map,
+      draggable: true,
+      title: "Drag to your delivery location",
+    });
+
+    // setMarker(initialMarker);
+
+    // Try to get current location
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const pos = {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+          };
+          map.setCenter(pos);
+          initialMarker.setPosition(pos);
+          onLocationSelect(pos.lat, pos.lng);
+          setError(null);
+        },
+        (err) => {
+          console.warn("Geolocation error:", err);
+          if (err.code === 1) setError("Location permission denied. Please pin manually.");
+          else if (err.code === 2) setError("Location unavailable. Please pin manually.");
+        }
+      );
+    }
+
+    initialMarker.addListener("dragend", () => {
+      const pos = initialMarker.getPosition();
+      if (pos) {
+        onLocationSelect(pos.lat(), pos.lng());
+      }
+    });
+
+    map.addListener("click", (e: google.maps.MapMouseEvent) => {
+      if (e.latLng) {
+        initialMarker.setPosition(e.latLng);
+        onLocationSelect(e.latLng.lat(), e.latLng.lng());
+      }
+    });
+  }, []);
+
+  return (
+    <div className="relative group">
+      <div ref={mapRef} className="w-full h-64 rounded-2xl border border-white/10 overflow-hidden mt-2 shadow-2xl" />
+      {error && <p className="text-[10px] text-red-400 mt-1 italic">{error}</p>}
+      <button
+        type="button"
+        onClick={() => {
+          if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+              (position) => {
+                const pos = { lat: position.coords.latitude, lng: position.coords.longitude };
+                onLocationSelect(pos.lat, pos.lng);
+                setError(null);
+              },
+              (err) => {
+                if (err.code === 1) setError("Permission denied.");
+                else setError("Location error.");
+              }
+            );
+          }
+        }}
+        className="absolute bottom-4 right-4 bg-brand text-brand-on px-3 py-1.5 rounded-lg text-[10px] font-bold shadow-lg opacity-0 group-hover:opacity-100 transition-opacity"
+      >
+        My Location
+      </button>
+    </div>
+  );
+};
+
+const renderMapStatus = (status: Status) => {
+  if (status === Status.LOADING) return <div className="h-48 w-full bg-white/5 animate-pulse rounded-xl mt-2 flex items-center justify-center text-white/20 text-xs">Loading map...</div>;
+  if (status === Status.FAILURE) return <div className="h-48 w-full bg-red-500/5 rounded-xl mt-2 flex items-center justify-center text-red-500/40 text-xs">Failed to load map</div>;
+  return <></>;
+};
 
 const RegisterPage: React.FC = () => {
   const navigate = useNavigate();
   const { role: currentRole, uid } = useAppSelector((state) => state.auth);
-
-  // Auto-redirect if already logged in
-  useEffect(() => {
-    if (uid && currentRole) {
-      if (currentRole === 'retail-customer') navigate('/customer-history');
-      else if (currentRole === 'rdc-staff') navigate('/delivery-boy');
-      else navigate('/dashboard');
-    }
-  }, [uid, currentRole, navigate]);
 
   // Track which step the user is on: role selection, filling info, or done
   const [currentStep, setCurrentStep] = useState<RegistrationStep>("role");
@@ -84,6 +224,20 @@ const RegisterPage: React.FC = () => {
 
   // Store any error messages to show to the user
   const [errorMessage, setErrorMessage] = useState<string>("");
+
+  // Store coordinates if picked on map
+  const [coordinates, setCoordinates] = useState<{ lat: number, lng: number } | null>(null);
+
+  // Auto-redirect if already logged in
+  useEffect(() => {
+    if (currentStep === "done") return; // Prevent redirect if just registered
+    if (uid && currentRole) {
+      if (currentRole === 'retail-customer') navigate('/customer-history');
+      else if (currentRole === 'rdc-staff') navigate('/delivery-boy');
+      else if (currentRole === 'logistics') navigate('/logistics-dashboard');
+      else navigate('/dashboard');
+    }
+  }, [uid, currentRole, navigate, currentStep]);
 
   // Define the two types of users who can register
   const roleOptions: RoleOption[] = [
@@ -100,6 +254,13 @@ const RegisterPage: React.FC = () => {
       description: "Regional distribution centre staff managing stock and deliveries.",
       icon: Building2,
       tag: "Inventory & dispatch",
+    },
+    {
+      id: "logistics",
+      title: "Logistics Team",
+      description: "Main logistics and fleet operations team managing island-wide transport.",
+      icon: Truck,
+      tag: "Fleet management",
     },
   ];
 
@@ -120,9 +281,9 @@ const RegisterPage: React.FC = () => {
     const formData = new FormData(event.currentTarget);
 
     // Get email and password (different field names for different roles)
-    const email = formData.get("email") || formData.get("staffEmail") as string;
-    const password = formData.get("password") || formData.get("staffPassword") as string;
-    const confirmPassword = formData.get("confirmPassword") || formData.get("staffConfirmPassword") as string;
+    const email = (formData.get("email") || formData.get("staffEmail")) as string;
+    const password = (formData.get("password") || formData.get("staffPassword")) as string;
+    const confirmPassword = (formData.get("confirmPassword") || formData.get("staffConfirmPassword")) as string;
 
     // Get name fields based on role
     const businessName = formData.get("businessName") as string;
@@ -161,7 +322,15 @@ const RegisterPage: React.FC = () => {
         name: displayName,
         email: email,
         createdAt: new Date().toISOString(),
+        status: (selectedRole === "retail-customer" || selectedRole === "logistics") ? "pending" : "active",
+        isActive: (selectedRole === "retail-customer" || selectedRole === "logistics") ? false : true,
       };
+
+      // Add coordinates if available
+      if (coordinates) {
+        userData.lat = coordinates.lat;
+        userData.lng = coordinates.lng;
+      }
 
       // Add all form fields to the user data (but exclude passwords for security)
       formData.forEach((value, key) => {
@@ -171,7 +340,17 @@ const RegisterPage: React.FC = () => {
       });
 
       // Save user data to Firestore
+      console.log("Saving user data to Firestore:");
+
+      // Save to specifically requested 'user' collection
+      await setDoc(doc(db, "user", user.uid), userData);
+
+      // Save to 'users' collection to ensure app continues to work
       await setDoc(doc(db, "users", user.uid), userData);
+
+      console.log("Firestore save successful.");
+
+      toast.success("successful Register");
 
       // Move to the success/done step
       setCurrentStep("done");
@@ -182,58 +361,14 @@ const RegisterPage: React.FC = () => {
     }
   };
 
-  // ============================================================
-  // UI Components - Helper functions to keep the main render clean
-  // ============================================================
 
-  // Reusable form field wrapper with label
-  const FormField: React.FC<FormFieldProps> = ({ label, children }) => (
-    <div className="flex flex-col gap-1.5">
-      <span className="text-[11px] font-bold uppercase tracking-wider text-white/60">
-        {label}
-      </span>
-      {children}
-    </div>
-  );
-
-  // Input field with an icon inside
-  const IconInputField: React.FC<IconInputFieldProps> = ({ id, icon: Icon, type = "text", placeholder, hint }) => (
-    <div className="flex flex-col gap-1">
-      <div className="relative">
-        <Icon
-          size={14}
-          className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30"
-        />
-        <Input
-          id={id}
-          name={id}
-          type={type}
-          placeholder={placeholder}
-          className="bg-[#080b10] border-white/8 text-white placeholder:text-white/20 h-11 pl-9 text-sm"
-        />
-      </div>
-      {hint && <p className="text-[10px] text-white/30 pl-1">{hint}</p>}
-    </div>
-  );
-
-  // Dropdown select field
-  const SelectField: React.FC<SelectFieldProps> = ({ name, placeholder, children }) => (
-    <Select name={name}>
-      <SelectTrigger className="w-full h-11 bg-[#080b10] border-white/8 text-white text-sm">
-        <SelectValue placeholder={placeholder} />
-      </SelectTrigger>
-      <SelectContent className="bg-dark-card border-dark-border text-white">
-        {children}
-      </SelectContent>
-    </Select>
-  );
 
   // ============================================================
   // Role-specific form sections
   // ============================================================
 
   // Form fields for Retail Customers
-  const RetailCustomerForm: React.FC = () => (
+  const RetailCustomerForm = () => (
     <div className="flex flex-col gap-4">
       {/* Business Identity Section */}
       <div className="border-b border-white/5 pb-3">
@@ -304,6 +439,20 @@ const RegisterPage: React.FC = () => {
           placeholder="No. 25, Main Street, Colombo 03"
           hint="Full shipping address"
         />
+        <Wrapper apiKey={GOOGLE_MAPS_API_KEY} render={(status) => renderMapStatus(status) as any}>
+          <div className="mt-3">
+            <p className="text-[10px] text-site-text-subtle mb-2 italic">
+              Pin your exact warehouse/shop location for accurate delivery routes
+            </p>
+            <LocationPicker onLocationSelect={(lat, lng) => setCoordinates({ lat, lng })} />
+            {coordinates && (
+              <div className="mt-2 flex items-center gap-2 text-[10px] text-brand font-medium animate-in fade-in slide-in-from-left-2">
+                <CheckCircle2 size={12} />
+                Location pinned: {coordinates.lat.toFixed(4)}, {coordinates.lng.toFixed(4)}
+              </div>
+            )}
+          </div>
+        </Wrapper>
       </FormField>
 
       {/* Login Section */}
@@ -325,7 +474,7 @@ const RegisterPage: React.FC = () => {
   );
 
   // Form fields for RDC Staff
-  const RdcStaffForm: React.FC = () => (
+  const RdcStaffForm = () => (
     <div className="flex flex-col gap-4">
       {/* Staff Identity Section */}
       <div className="border-b border-white/5 pb-3">
@@ -346,8 +495,6 @@ const RegisterPage: React.FC = () => {
       <FormField label="NIC Number">
         <IconInputField id="nicNumber" icon={IdCard} placeholder="NIC" />
       </FormField>
-
-
 
       <div className="grid grid-cols-2 gap-4">
         <FormField label="Phone Number">
@@ -386,34 +533,35 @@ const RegisterPage: React.FC = () => {
     </div>
   );
 
-  // Map role IDs to their form components
-  const getFormForRole: Record<UserRole, React.ReactNode> = {
-    "retail-customer": <RetailCustomerForm />,
-    "rdc-staff": <RdcStaffForm />,
+  // Map role IDs to their form sections (as functions to prevent remounting)
+  const formForRole = {
+    "retail-customer": RetailCustomerForm(),
+    "rdc-staff": RdcStaffForm(),
+    "logistics": RdcStaffForm(), // Using same form structure for logistics staff
   };
 
   // ============================================================
   // MAIN RENDER - Shows different content based on current step
   // ============================================================
   return (
-    <div className="min-h-screen bg-site-bg text-white">
+    <div className="min-h-screen bg-site-bg text-site-text transition-colors duration-300">
       {/* Navigation Bar */}
-      <nav className="flex items-center justify-between px-8 py-5 border-b border-white/5">
-        <Link to="/" className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-brand to-brand-dark flex items-center justify-center">
-            <Layers size={15} className="text-white" />
+      <nav className="flex items-center justify-between px-8 py-5 border-b border-site-border bg-site-card/50 backdrop-blur-md sticky top-0 z-50">
+        <Link to="/" className="flex items-center gap-3 group">
+          <div className="w-8 h-8 rounded-xl bg-linear-to-br from-brand to-brand-dark flex items-center justify-center shadow-lg shadow-brand-glow">
+            <Layers size={15} strokeWidth={2} className="text-white" />
           </div>
-          <div>
-            <span className="text-white font-bold text-[14px]">ISDN</span>
-            <span className="block text-[9px] text-white/35">IslandLink Network</span>
+          <div className="flex flex-col leading-none">
+            <span className="text-site-text font-bold text-[14px]">ISDN</span>
+            <span className="text-[9px] text-site-text-subtle uppercase tracking-wider leading-none mt-1">IslandLink Network</span>
           </div>
         </Link>
-        <p className="text-xs text-white/40">
-          Already have an account?{" "}
-          <Link to="/login" className="text-brand hover:underline">
-            Sign in
-          </Link>
-        </p>
+        <div className="flex items-center gap-6">
+          <p className="text-xs text-site-text-subtle">
+            Already have an account?{" "}
+            <Link to="/login" className="text-brand hover:underline font-medium">Sign in</Link>
+          </p>
+        </div>
       </nav>
 
       {/* Progress Tracker - Shows which step user is on */}
@@ -437,13 +585,13 @@ const RegisterPage: React.FC = () => {
                   <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold
                     ${isCompleted ? "bg-brand text-white" :
                       isActive ? "bg-brand/30 border border-brand text-brand" :
-                        "bg-white/5 border border-white/10 text-white/30"}`}
+                        "bg-white/5 border border-site-border text-site-text-subtle"}`}
                   >
                     {isCompleted ? <CheckCircle2 size={13} /> : index + 1}
                   </div>
                   <span className={`text-[11px] hidden sm:block
-                    ${isActive ? "text-white" :
-                      isCompleted ? "text-brand" : "text-white/30"}`}
+                    ${isActive ? "text-site-text" :
+                      isCompleted ? "text-brand" : "text-site-text-subtle"}`}
                   >
                     {label}
                   </span>
@@ -467,7 +615,7 @@ const RegisterPage: React.FC = () => {
             <>
               <div className="text-center mb-8">
                 <h1 className="text-3xl font-bold mb-2">Create your account</h1>
-                <p className="text-white/45 text-sm">
+                <p className="text-site-text-subtle text-sm">
                   Select your role to get the right registration form.
                 </p>
               </div>
@@ -492,7 +640,7 @@ const RegisterPage: React.FC = () => {
                           {role.tag}
                         </span>
                       </div>
-                      <p className="text-xs text-white/45">{role.description}</p>
+                      <p className="text-xs text-site-text-subtle">{role.description}</p>
                     </div>
                     <ChevronRight size={18} className="text-white/20" />
                   </button>
@@ -511,7 +659,7 @@ const RegisterPage: React.FC = () => {
                     setCurrentStep("role");
                     setSelectedRole("");
                   }}
-                  className="flex items-center gap-1.5 text-xs text-white/50 hover:text-brand mb-4"
+                  className="flex items-center gap-1.5 text-xs text-site-text-subtle hover:text-brand mb-4"
                 >
                   <ArrowLeft size={13} /> Back to role selection
                 </button>
@@ -524,7 +672,7 @@ const RegisterPage: React.FC = () => {
                     <h1 className="text-xl font-bold">
                       Register as {selectedRoleDetails.title}
                     </h1>
-                    <p className="text-xs text-white/40 mt-0.5">
+                    <p className="text-xs text-site-text-subtle mt-0.5">
                       {selectedRoleDetails.description}
                     </p>
                   </div>
@@ -535,7 +683,7 @@ const RegisterPage: React.FC = () => {
               <div className="bg-dark-card border border-dark-border rounded-3xl p-6">
                 <form onSubmit={handleSubmit}>
                   {/* Show the appropriate form based on selected role */}
-                  {selectedRole && getFormForRole[selectedRole]}
+                  {selectedRole && formForRole[selectedRole]}
 
                   {/* Submit button */}
                   <button
@@ -572,7 +720,7 @@ const RegisterPage: React.FC = () => {
 
               <h2 className="text-3xl font-bold mb-3">Registration Submitted!</h2>
 
-              <p className="text-white/50 text-sm max-w-sm mx-auto mb-8">
+              <p className="text-site-text-subtle text-sm max-w-sm mx-auto mb-8">
                 Your registration has been submitted for review. You'll receive
                 a confirmation email once your account is activated.
               </p>

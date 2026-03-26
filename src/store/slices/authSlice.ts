@@ -10,6 +10,10 @@ export interface UserState {
   district?: string | null;
   phone?: string | null;
   province?: string | null;
+  isActive?: boolean;
+  status?: string;
+  lat?: number | null;
+  lng?: number | null;
 }
 
 const initialState: UserState = {
@@ -21,6 +25,10 @@ const initialState: UserState = {
   district: null,
   phone: null,
   province: null,
+  isActive: undefined,
+  status: undefined,
+  lat: null,
+  lng: null,
 };
 
 const authSlice = createSlice({
